@@ -2926,6 +2926,8 @@ const server = http.createServer(async (req, res) => {
         'feeds.capi24.com',  // News24 redirect destination
         'islandtimes.org',
         'www.atlanticcouncil.org',
+        // Travel advisories (blocked by Vercel IPs)
+        'www.smartraveller.gov.au',
       ];
       const parsed = new URL(feedUrl);
       // Block deprecated/stale feed domains — stale clients still request these
