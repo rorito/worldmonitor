@@ -13,7 +13,7 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const path = require('path');
-const { readFileSync } = require('fs');
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('fs');
 const crypto = require('crypto');
 const v8 = require('v8');
 const { WebSocketServer, WebSocket } = require('ws');
@@ -1587,6 +1587,38 @@ let openskyTokenPromise = null; // mutex: single in-flight token request
 let openskyAuthCooldownUntil = 0; // backoff after repeated failures
 const OPENSKY_AUTH_COOLDOWN_MS = 60000; // 1 min cooldown after auth failure
 
+// File-based token persistence — survives process restarts within same deploy
+const OPENSKY_TOKEN_CACHE_PATH = path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH || '/tmp', 'opensky-token.json');
+
+function _persistOpenSkyToken(token, expiry) {
+  try {
+    const dir = path.dirname(OPENSKY_TOKEN_CACHE_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(OPENSKY_TOKEN_CACHE_PATH, JSON.stringify({ token, expiry }), 'utf8');
+  } catch (err) {
+    console.warn('[Relay] Failed to persist OpenSky token:', err.message);
+  }
+}
+
+function _loadPersistedOpenSkyToken() {
+  try {
+    if (!existsSync(OPENSKY_TOKEN_CACHE_PATH)) return false;
+    const data = JSON.parse(readFileSync(OPENSKY_TOKEN_CACHE_PATH, 'utf8'));
+    if (data.token && data.expiry && Date.now() < data.expiry - 120000) {
+      openskyToken = data.token;
+      openskyTokenExpiry = data.expiry;
+      console.log('[Relay] Restored OpenSky token from disk, expires in', Math.round((data.expiry - Date.now()) / 1000), 'seconds');
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Relay] Failed to load persisted OpenSky token:', err.message);
+  }
+  return false;
+}
+
+// Attempt to restore token on startup
+_loadPersistedOpenSkyToken();
+
 // Global OpenSky rate limiter — serializes upstream requests and enforces 429 cooldown
 let openskyGlobal429Until = 0; // timestamp: block ALL upstream requests until this time
 const OPENSKY_429_COOLDOWN_MS = Number(process.env.OPENSKY_429_COOLDOWN_MS) || 90 * 1000; // 90s cooldown after any 429
@@ -1640,7 +1672,7 @@ function _attemptOpenSkyTokenFetch(clientId, clientSecret) {
         'Content-Length': Buffer.byteLength(postData),
         'User-Agent': 'WorldMonitor/1.0',
       },
-      timeout: 10000
+      timeout: 20000
     }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -1690,6 +1722,7 @@ async function _fetchOpenSkyToken(clientId, clientSecret) {
       if (result.token) {
         openskyToken = result.token;
         openskyTokenExpiry = Date.now() + result.expiresIn * 1000;
+        _persistOpenSkyToken(openskyToken, openskyTokenExpiry);
         console.log('[Relay] OpenSky token acquired, expires in', result.expiresIn, 'seconds');
         return openskyToken;
       }
