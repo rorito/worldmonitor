@@ -1,0 +1,7 @@
+# Exclude everything by default
+*
+
+# Include only what the AIS relay Dockerfile needs
+!scripts/ais-relay.cjs
+!package.json
+!package-lock.json
