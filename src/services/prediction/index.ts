@@ -71,6 +71,8 @@ const client = new PredictionServiceClient('', { fetch: (...args) => globalThis.
 let directFetchWorks: boolean | null = null;
 let directFetchProbe: Promise<boolean> | null = null;
 async function probeDirectFetchCapability(): Promise<boolean> {
+  // Skip probe for non-localhost — Polymarket doesn't send CORS headers
+  if (!isLocalhostRuntime) { directFetchWorks = false; return false; }
   if (directFetchWorks !== null) return directFetchWorks;
   if (!directFetchProbe) {
     directFetchProbe = fetch(`${GAMMA_API}/events?closed=false&active=true&archived=false&order=volume&ascending=false&limit=1`, {
