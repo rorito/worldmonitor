@@ -637,6 +637,7 @@ function getRouteGroup(pathname) {
   if (pathname.startsWith('/ucdp-events')) return 'ucdp-events';
   if (pathname.startsWith('/oref')) return 'oref';
   if (pathname === '/notam') return 'notam';
+  if (pathname === '/gdacs') return 'gdacs';
   return 'other';
 }
 
@@ -2668,6 +2669,63 @@ function handleNotamProxyRequest(req, res) {
   });
 }
 
+// GDACS proxy — GDACS blocks or is slow from Vercel edge
+let gdacsCache = null;
+let gdacsCachedAt = 0;
+const GDACS_CACHE_TTL = 600_000; // 10 minutes
+const GDACS_URL = 'https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP';
+
+async function handleGdacsProxyRequest(req, res) {
+  try {
+    const now = Date.now();
+    if (gdacsCache && now - gdacsCachedAt < GDACS_CACHE_TTL) {
+      return sendCompressed(req, res, 200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=600',
+        'X-Cache': 'HIT',
+      }, gdacsCache);
+    }
+
+    const resp = await fetch(GDACS_URL, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!resp.ok) {
+      if (gdacsCache) {
+        return sendCompressed(req, res, 200, {
+          'Content-Type': 'application/json',
+          'X-Cache': 'STALE',
+        }, gdacsCache);
+      }
+      return safeEnd(res, 502, { 'Content-Type': 'application/json' },
+        JSON.stringify({ error: `GDACS HTTP ${resp.status}` }));
+    }
+
+    gdacsCache = await resp.text();
+    gdacsCachedAt = now;
+
+    return sendCompressed(req, res, 200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'public, max-age=600',
+      'X-Cache': 'MISS',
+    }, gdacsCache);
+  } catch (err) {
+    console.error('[Relay] GDACS proxy error:', err.message);
+    if (gdacsCache) {
+      return sendCompressed(req, res, 200, {
+        'Content-Type': 'application/json',
+        'X-Cache': 'STALE',
+      }, gdacsCache);
+    }
+    return safeEnd(res, 502, { 'Content-Type': 'application/json' },
+      JSON.stringify({ error: err.message }));
+  }
+}
+
 // CORS origin allowlist — only our domains can use this relay
 const ALLOWED_ORIGINS = [
   'https://worldmonitor.app',
@@ -3179,6 +3237,8 @@ const server = http.createServer(async (req, res) => {
     handleYouTubeLiveRequest(req, res);
   } else if (pathname === '/notam') {
     handleNotamProxyRequest(req, res);
+  } else if (pathname === '/gdacs') {
+    handleGdacsProxyRequest(req, res);
   } else {
     res.writeHead(404);
     res.end();
